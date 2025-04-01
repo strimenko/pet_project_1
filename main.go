@@ -32,7 +32,7 @@ func main() {
 
 	updateUserEmail(db, 1, "newivan@gmail.com")
 
-	getUserByID(db, 1)
+	//getUserByID(db, 1)
 
 	deleteUser(db, 1)
 }
