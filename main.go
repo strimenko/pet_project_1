@@ -1,95 +1,234 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
+	"pet_project_1/models"
+	"time"
 
+	"github.com/dgrijalva/jwt-go"
+	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+	"github.com/jinzhu/gorm"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
 
+var db *gorm.DB
+var err error
+var validate *validator.Validate
+
+// JWT секрет
+var jwtSecret = []byte(os.Getenv("JWT_SECRET"))
+
 func main() {
-	// Подключение к базе данных
-	connStr := "user=user password=password dbname=db host=localhost port=5432 sslmode=disable"
-	db, err := sql.Open("postgres", connStr)
+	// Загружаем .env файл
+	err := godotenv.Load()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Error loading .env file")
+	}
+
+	// Подключаемся к базе данных
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		os.Getenv("DB_HOST"),
+		os.Getenv("DB_PORT"),
+		os.Getenv("DB_USER"),
+		os.Getenv("DB_PASSWORD"),
+		os.Getenv("DB_NAME"))
+
+	db, err = gorm.Open("postgres", dsn)
+	if err != nil {
+		log.Fatal("Failed to connect to database:", err)
 	}
 	defer db.Close()
 
-	// Проверка подключения
-	err = db.Ping()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("Connected to the database!")
+	// Автоматически мигрируем таблицы
+	db.AutoMigrate(&models.User{})
 
-	createTable(db)
+	// Инициализируем валидатор
+	validate = validator.New()
 
-	//insertUser(db, "Ivan", "ivan@gmail.com")
+	// Создаем роутер
+	r := gin.Default()
 
-	getUserByID(db, 1)
+	// Роуты
+	r.POST("/register", register)
+	r.POST("/login", login)
+	r.PUT("/user", authMiddleware(), updateUser)
+	r.DELETE("/user/:id", authMiddleware(), deleteUser)
 
-	updateUserEmail(db, 1, "newivan@gmail.com")
-
-	//getUserByID(db, 1)
-
-	deleteUser(db, 1)
+	// Запускаем сервер
+	r.Run(":8080")
 }
 
-func createTable(db *sql.DB) {
-	query := `
-		CREATE TABLE IF NOT EXISTS users (
-			id SERIAL PRIMARY KEY,
-			name VARCHAR(50) NOT NULL,
-			email VARCHAR(100) NOT NULL UNIQUE
-		)
-	`
-	_, err := db.Exec(query)
-	if err != nil {
-		log.Fatal(err)
+// register Обработчик регистрации пользователя
+func register(c *gin.Context) {
+	var user models.User
+	if err := c.ShouldBindJSON(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
-	fmt.Println("Table created successfully!")
+
+	// Валидируем данные
+	if err := validate.Struct(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Validation failed", "details": err.Error()})
+		return
+	}
+
+	// Проверка на уникальность username
+	var existingUser models.User
+	if err := db.Where("username = ?", user.Username).First(&existingUser).Error; err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Username already taken"})
+		return
+	}
+
+	// Хэшируем пароль
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error hashing password"})
+		return
+	}
+
+	user.Password = string(hashedPassword)
+
+	// Сохраняем пользователя в базу данных
+	if err := db.Create(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error creating user"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User registered successfully"})
 }
 
-func insertUser(db *sql.DB, name, email string) {
-	query := "INSERT INTO users (name, email) VALUES ($1, $2)"
-	result, err := db.Exec(query, name, email)
-	if err != nil {
-		log.Fatal(err)
+// login Обработчик логина и генерации JWT
+func login(c *gin.Context) {
+	var user models.User
+	if err := c.ShouldBindJSON(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		log.Fatal(err)
+	// Проверяем пользователя в базе данных
+	var dbUser models.User
+	if err := db.Where("username = ?", user.Username).First(&dbUser).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
 	}
-	fmt.Printf("User inserted. Rows affected: %d\n", rowsAffected)
+
+	// Сравниваем пароли
+	err := bcrypt.CompareHashAndPassword([]byte(dbUser.Password), []byte(user.Password))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	// Генерируем JWT
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"username": user.Username,
+		"exp":      time.Now().Add(time.Hour * 24).Unix(),
+	})
+
+	tokenString, err := token.SignedString(jwtSecret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"token": tokenString})
 }
 
-func getUserByID(db *sql.DB, id int) {
-	var name, email string
-	query := "SELECT name, email FROM users WHERE id = $1"
-	err := db.QueryRow(query, id).Scan(&name, &email)
-	if err != nil {
-		log.Fatal(err)
+// authMiddleware JWT-аутентификация
+func authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tokenString := c.GetHeader("Authorization")
+		if tokenString == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header missing"})
+			c.Abort()
+			return
+		}
+
+		// Убираем "Bearer " из строки токена
+		tokenString = tokenString[7:]
+
+		// Проверяем токен
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			// Проверка метода подписи
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return jwtSecret, nil
+		})
+
+		if err != nil || !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
+
+		// Если все прошло успешно, передаем управление дальше
+		c.Next()
 	}
-	fmt.Printf("User: %s, Email: %s\n", name, email)
 }
 
-func updateUserEmail(db *sql.DB, id int, newEmail string) {
-	query := "UPDATE users SET email = $1 WHERE id = $2"
-	_, err := db.Exec(query, newEmail, id)
-	if err != nil {
-		log.Fatal(err)
+// updateUser Обработчик обновления пользователя
+func updateUser(c *gin.Context) {
+	var user models.User
+	if err := c.ShouldBindJSON(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
-	fmt.Println("User updated successfully!")
+
+	// Валидируем данные
+	if err := validate.Struct(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Validation failed", "details": err.Error()})
+		return
+	}
+
+	// Проверяем, существует ли пользователь
+	var dbUser models.User
+	if err := db.Where("username = ?", user.Username).First(&dbUser).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Обновляем пользователя (например, только username или password)
+	// Если пароль обновляется, хэшируем его
+	if user.Password != "" {
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error hashing password"})
+			return
+		}
+		user.Password = string(hashedPassword)
+	}
+
+	if err := db.Model(&dbUser).Updates(user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating user"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User updated successfully"})
 }
 
-func deleteUser(db *sql.DB, id int) {
-	query := "DELETE FROM users WHERE id = $1"
-	_, err := db.Exec(query, id)
-	if err != nil {
-		log.Fatal(err)
+// deleteUser Обработчик удаления пользователя
+func deleteUser(c *gin.Context) {
+	id := c.Param("id")
+
+	// Проверяем, существует ли пользователь
+	var user models.User
+	if err := db.Where("id = ?", id).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
 	}
-	fmt.Println("User deleted successfully!")
+
+	// Удаляем пользователя
+	if err := db.Delete(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting user"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
 }
