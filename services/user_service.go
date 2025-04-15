@@ -73,14 +73,13 @@ func (s *userService) Delete(userID string) error {
 }
 
 func (s *userService) GetAllUsers() ([]models.User, error) {
-	users, err := s.repo.FindAll() // Предполагаем, что метод FindAll() существует в репозитории
+	users, err := s.repo.FindAll()
 	if err != nil {
 		return nil, err
 	}
 	return users, nil
 }
 
-// Define errors
 var (
 	ErrUserExists         = errors.New("user already exists")
 	ErrInvalidCredentials = errors.New("invalid username or password")

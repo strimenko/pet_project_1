@@ -65,15 +65,13 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 		return
 	}
 
-	// Проверяем, существует ли пользователь
 	dbUser, err := h.service.GetUserByID(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
-	// Обновляем данные пользователя
-	user.ID = dbUser.ID // Сохраняем оригинальный ID пользователя
+	user.ID = dbUser.ID
 	if err := h.service.Update(&user); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -82,12 +80,9 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "User updated successfully"})
 }
 
-// Обработчик удаления пользователя по ID
 func (h *UserHandler) DeleteUser(c *gin.Context) {
-	// Получаем ID пользователя из параметров URL
 	id := c.Param("id")
 
-	// Проверяем, существует ли пользователь
 	if err := h.service.Delete(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

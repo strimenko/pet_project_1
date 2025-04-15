@@ -12,7 +12,7 @@ type UserRepository interface {
 	Delete(user *models.User) error
 	FindByUsername(username string) (*models.User, error)
 	FindByID(userID string) (*models.User, error)
-	FindAll() ([]models.User, error) // Новый метод для получения всех пользователей
+	FindAll() ([]models.User, error)
 }
 
 type userRepository struct {
@@ -51,7 +51,6 @@ func (r *userRepository) FindByID(userID string) (*models.User, error) {
 	return &user, nil
 }
 
-// Новый метод для получения всех пользователей
 func (r *userRepository) FindAll() ([]models.User, error) {
 	var users []models.User
 	if err := r.db.Find(&users).Error; err != nil {
