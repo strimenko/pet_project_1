@@ -17,4 +17,3 @@ COPY --from=builder /app/myapp /usr/local/bin/myapp
 
 COPY .env .env
 
-CMD ["myapp"]
